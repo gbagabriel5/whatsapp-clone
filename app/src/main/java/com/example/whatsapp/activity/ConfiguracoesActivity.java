@@ -1,21 +1,241 @@
 package com.example.whatsapp.activity;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+
+import android.Manifest;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.Matrix;
+import android.media.ExifInterface;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
+import android.view.View;
+import android.widget.ImageButton;
+import android.widget.Toast;
+
 import com.example.whatsapp.R;
+import com.example.whatsapp.config.ConfiguracaoFirebase;
+import com.example.whatsapp.helper.Base64Custom;
+import com.example.whatsapp.helper.Permissao;
+import com.example.whatsapp.helper.UsuarioFirebase;
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.OnFailureListener;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.storage.StorageReference;
+import com.google.firebase.storage.UploadTask;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+
+import de.hdodenhof.circleimageview.CircleImageView;
 
 public class ConfiguracoesActivity extends AppCompatActivity {
+
+    private String[] permissoesNecessarias = new String[]{
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.CAMERA
+    };
+
+    private ImageButton imgBtnCamera, imgBtnGaleria;
+    private CircleImageView imageView;
+    private StorageReference storageReference;
+    private String idUsuario;
+    private static final int SELECAO_CAMERA = 100;
+    private static final int SELECAO_GALERIA = 200;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_configuracoes);
 
+        storageReference = ConfiguracaoFirebase.getFirebaseStorage();
+        idUsuario = UsuarioFirebase.getIdUsuario();
+
+        Permissao.validarPermissoes(permissoesNecessarias, this, 1);
+
+        imgBtnCamera = findViewById(R.id.imageButtonCamera);
+        imgBtnGaleria = findViewById(R.id.imageButtonGaleria);
+        imageView = findViewById(R.id.circleImageViewFotoPerfil);
+
         Toolbar toolbar = findViewById(R.id.toolbarPrincipal);
         toolbar.setTitle("Configurações");
         setSupportActionBar(toolbar);
 
         getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+
+        //Recuperar dados do usuario
+        FirebaseUser user = UsuarioFirebase.getUsuarioAtual();
+
+
+        imgBtnCamera.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                if(i.resolveActivity(getPackageManager()) != null)
+                    startActivityForResult(i, SELECAO_CAMERA);
+            }
+        });
+        imgBtnGaleria.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                Intent i = new Intent
+                        (Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+                if(i.resolveActivity(getPackageManager()) != null)
+                    startActivityForResult(i, SELECAO_GALERIA);
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if(resultCode == RESULT_OK) {
+            Bitmap imagem = null;
+            try {
+                switch (requestCode) {
+                    case SELECAO_CAMERA :
+                        imagem = (Bitmap) data.getExtras().get("data");
+                        break;
+                    case SELECAO_GALERIA :
+                        Uri localImagemSelecionada = data.getData();
+                        imagem = MediaStore.Images.Media.getBitmap(
+                                getContentResolver(),
+                                localImagemSelecionada);
+                        String caminhoDaImagem = getImagePath(localImagemSelecionada);
+                        int anguloDaFoto = carrega(caminhoDaImagem);
+                        imagem = rotacionaImagem(imagem, anguloDaFoto);
+
+                        break;
+                }
+                if (imagem != null) {
+                    imageView.setImageBitmap(imagem);
+
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    imagem.compress(Bitmap.CompressFormat.JPEG, 70, baos);
+                    byte[] dadosImagem = baos.toByteArray();
+
+                    //salvar imagem no firebase
+                    final StorageReference imagemRef = storageReference
+                            .child("imagens")
+                            .child("perfil")
+//                            .child(idUsuario)
+                            .child(idUsuario+".jpeg");
+                    UploadTask uploadTask = imagemRef.putBytes(dadosImagem);
+                    uploadTask.addOnFailureListener(new OnFailureListener() {
+                        @Override
+                        public void onFailure(@NonNull Exception e) {
+                            Toast.makeText(ConfiguracoesActivity.this,
+                                    "Erro ao fazer upload da imagem!",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    }).addOnSuccessListener(new OnSuccessListener<UploadTask.TaskSnapshot>() {
+                        @Override
+                        public void onSuccess(UploadTask.TaskSnapshot taskSnapshot) {
+                            Toast.makeText(ConfiguracoesActivity.this,
+                                    "Sucesso ao fazer upload da imagem!",
+                                    Toast.LENGTH_SHORT).show();
+                            imagemRef.getDownloadUrl().addOnCompleteListener(new OnCompleteListener<Uri>() {
+                                @Override
+                                public void onComplete(@NonNull Task<Uri> task) {
+                                    Uri uri = task.getResult();
+                                    atualizaFotoUsuario(uri);
+                                }
+                            });
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    public void atualizaFotoUsuario(Uri uri) {
+
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        for (int permissaoResultado : grantResults){
+            if(permissaoResultado == PackageManager.PERMISSION_DENIED)
+                alertaValidacaoPermissao();
+
+        }
+    }
+
+    public void alertaValidacaoPermissao() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Permissões Negadas!");
+        builder.setMessage("Para ultilizar o app é necessário aceitar as permissões");
+        builder.setCancelable(false);
+        builder.setPositiveButton("Confirmar", new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialogInterface, int i) {
+                finish();
+            }
+        });
+        AlertDialog dialog = builder.create();
+        dialog.show();
+    }
+
+    public String getImagePath(Uri contentUri) {
+        String[] campos = {MediaStore.Images.Media.DATA};
+        Cursor cursor = getContentResolver().query(contentUri,campos,null,null,null);
+        cursor.moveToFirst();
+        String path = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA));
+        cursor.close();
+        return path;
+    }
+
+
+    public int carrega(String caminhoFoto) {
+
+        ExifInterface exif = null;
+        try {
+            //data carrega imagem, mas está retornando zero sempre! Mas não dá erro.
+            exif = new ExifInterface(caminhoFoto);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        String orientacao = exif.getAttribute(ExifInterface.TAG_ORIENTATION);
+
+        int codigoOrientacao = Integer.parseInt(orientacao);
+        int i=0;
+        switch (codigoOrientacao) {
+            case ExifInterface.ORIENTATION_NORMAL:
+                i = 0;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                i = 90;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                i = 180;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                i = 270;
+                break;
+        }
+        return i;
+    }
+
+
+    private Bitmap rotacionaImagem(Bitmap image, int degrees){
+
+        Matrix matrix= new Matrix();
+        matrix.setRotate(degrees);
+        Bitmap btmp = Bitmap.createBitmap(image,0,0,image.getWidth(),image.getHeight(),matrix,true);
+
+        return btmp;
+
     }
 }
